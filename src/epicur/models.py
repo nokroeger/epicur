@@ -53,3 +53,25 @@ class OrganizationResult:
     action: str  # "moved", "duplicate", "skipped", "recording", "error"
     episode_match: EpisodeMatch | None = None
     error_message: str = ""
+
+
+@dataclass
+class SeasonInfo:
+    series_title: str
+    series_dir: Path
+    season_number: int
+    total_episodes: int
+    present_episodes: dict[int, Path] = field(default_factory=dict)
+    missing_episodes: list[int] = field(default_factory=list)
+
+    @property
+    def is_complete(self) -> bool:
+        return len(self.present_episodes) >= self.total_episodes > 0
+
+
+@dataclass
+class PostprocessResult:
+    source_path: Path
+    output_path: Path | None
+    action: str  # "converted", "skipped", "error"
+    error_message: str = ""

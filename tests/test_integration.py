@@ -755,7 +755,7 @@ class TestMainCli:
         (show / "Show S01E01.ts").write_text("x")
 
         with patch("epicur.metadata_extractor.subprocess.run", side_effect=_subprocess_side):
-            rc = main(["--dry-run", "--no-tvmaze", str(root)])
+            rc = main(["recognize", "--dry-run", "--no-tvmaze", str(root)])
             assert rc == 0
 
     def test_review_mode(self, tmp_path: Path):
@@ -764,7 +764,7 @@ class TestMainCli:
         root = tmp_path / "recordings"
         root.mkdir()
         with patch("epicur.main.review_unmatched") as mock_review:
-            rc = main(["--review", "--dry-run", str(root)])
+            rc = main(["review", "--dry-run", str(root)])
             assert rc == 0
             mock_review.assert_called_once()
             _, kwargs = mock_review.call_args
@@ -780,6 +780,7 @@ class TestMainCli:
         with patch("epicur.main.fetch_dvr_entries_api", return_value=[]) as mock_api, \
              patch("epicur.main.process_directory", return_value=[]):
             rc = main([
+                "recognize",
                 "--no-tvmaze", "--dry-run",
                 "--tvh-dvr-log", str(fake_log),
                 "--tvh-url", "http://localhost:9981",
@@ -800,7 +801,7 @@ class TestMainCli:
             action="error", error_message="fail",
         )
         with patch("epicur.main.process_directory", return_value=[err]):
-            rc = main(["--no-tvmaze", "--dry-run", str(root)])
+            rc = main(["recognize", "--no-tvmaze", "--dry-run", str(root)])
             assert rc == 1
 
     def test_tvmaze_disabled_for_german(self, tmp_path: Path):
@@ -809,9 +810,43 @@ class TestMainCli:
         root = tmp_path / "recordings"
         root.mkdir()
         with patch("epicur.main.process_directory", return_value=[]) as mock_proc:
-            main(["--language", "de-DE", str(root)])
+            main(["recognize", "--language", "de-DE", str(root)])
             _, kwargs = mock_proc.call_args
             assert kwargs["use_tvmaze"] is False
+
+    def test_postprocess_mode_args(self, tmp_path: Path):
+        from epicur.main import main
+
+        root = tmp_path / "recordings"
+        root.mkdir()
+        lib = tmp_path / "library"
+        lib.mkdir()
+
+        with patch("epicur.postprocess.postprocess_all", return_value=[]) as mock_pp:
+            rc = main([
+                "postprocess", str(root),
+                "--library-dir", str(lib),
+                "--crf", "18", "--preset", "medium",
+                "--no-tvmaze",
+            ])
+            assert rc == 0
+            mock_pp.assert_called_once()
+            _, kwargs = mock_pp.call_args
+            assert kwargs["crf"] == 18
+            assert kwargs["preset"] == "medium"
+            assert kwargs["library_dir"] == lib
+
+    def test_postprocess_library_same_as_root_warns(self, tmp_path: Path, caplog):
+        from epicur.main import main
+        import logging
+
+        root = tmp_path / "recordings"
+        root.mkdir()
+
+        with patch("epicur.postprocess.postprocess_all", return_value=[]), \
+             caplog.at_level(logging.WARNING):
+            main(["postprocess", str(root), "--library-dir", str(root)])
+            assert "same as the recordings directory" in caplog.text
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -981,6 +1016,7 @@ class TestRecordingSkip:
 
         fake_log = tmp_path / "no_dvr"
         rc = main([
+            "recognize",
             "--no-tvmaze", "--dry-run",
             "--min-age", "9999",
             "--tvh-dvr-log", str(fake_log),
@@ -1006,6 +1042,7 @@ class TestRecordingSkip:
              patch("epicur.main.write_meta_file"):
             mock_meta.return_value = MagicMock()
             rc = main([
+                "recognize",
                 "--no-tvmaze", "--dry-run",
                 "--min-age", "0",
                 "--tvh-dvr-log", str(fake_log),

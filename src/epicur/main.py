@@ -7,9 +7,10 @@ through free online databases (TVMaze, TMDB), and renames/organizes them
 into season folders.
 
 Usage:
-    python main.py /home/recordings
-    python main.py /home/recordings --dry-run --verbose
-    python main.py /home/recordings --tmdb-api-key YOUR_KEY --confidence 0.5
+    epicur recognize /home/recordings --dry-run --verbose
+    epicur recognize /home/recordings --tmdb-api-key YOUR_KEY --confidence 0.5
+    epicur review /home/recordings
+    epicur postprocess /home/recordings --library-dir /media/tv
 """
 from __future__ import annotations
 
@@ -68,6 +69,7 @@ def process_directory(
     dry_run: bool = False,
     tvh_entries: list[dict] | None = None,
     min_age: int = 300,
+    library_dir: Path | None = None,
 ) -> list[OrganizationResult]:
     """Process all series subdirectories under *root_dir*.
 
@@ -161,7 +163,7 @@ def process_directory(
                     "Match below threshold (%.3f < %.2f), skipping: %s",
                     match.confidence, min_confidence, video_file.name,
                 )
-            result = organize_file(series_dir, video_file, accepted_match, dry_run=dry_run)
+            result = organize_file(series_dir, video_file, accepted_match, dry_run=dry_run, library_dir=library_dir, root_dir=root_dir)
             results.append(result)
 
     return results
@@ -209,7 +211,7 @@ def print_report(results: list[OrganizationResult]) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """Parse command-line arguments with subcommands."""
     parser = argparse.ArgumentParser(
         description="Automatically identify and organize TV recordings into season folders.",
     )
@@ -218,85 +220,165 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="version",
         version=f"epicur {__version__}",
     )
-    parser.add_argument(
-        "directory",
-        type=Path,
-        help="Root directory containing series subfolders with recordings.",
+
+    subparsers = parser.add_subparsers(dest="mode", help="Operating mode")
+
+    # --- shared arguments (added to each subcommand) ---
+    def add_common_args(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument(
+            "directory",
+            type=Path,
+            help="Root directory containing series subfolders with recordings.",
+        )
+        sub.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Show what would happen without actually moving files.",
+        )
+        sub.add_argument(
+            "--extensions",
+            default=".ts,.mp4,.mkv",
+            help="Comma-separated list of file extensions to process (default: .ts,.mp4,.mkv).",
+        )
+        sub.add_argument(
+            "--verbose", "-v",
+            action="store_true",
+            help="Enable debug logging.",
+        )
+        sub.add_argument(
+            "--log-file",
+            default=None,
+            help="Path to a log file.",
+        )
+
+    def add_api_args(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument(
+            "--tmdb-api-key",
+            default=os.environ.get("EPICUR_TMDB_API_KEY", ""),
+            help="Optional TMDB API key for richer episode data (or set EPICUR_TMDB_API_KEY).",
+        )
+        sub.add_argument(
+            "--no-tvmaze",
+            action="store_true",
+            help="Disable TVMaze lookups (use only TMDB and local matching). Implied when --language is not English.",
+        )
+        sub.add_argument(
+            "--language",
+            default="de-DE",
+            help="TMDB metadata language as BCP-47 tag (default: de-DE). TVMaze is automatically disabled for non-English languages.",
+        )
+
+    def add_tvh_args(sub: argparse.ArgumentParser) -> None:
+        sub.add_argument(
+            "--tvh-dvr-log",
+            type=Path,
+            default=Path.home() / ".hts" / "tvheadend" / "dvr" / "log",
+            help="Path to TVHeadend DVR log directory (default: ~/.hts/tvheadend/dvr/log/).",
+        )
+        sub.add_argument(
+            "--tvh-url",
+            default="",
+            help="TVHeadend HTTP API URL (e.g. http://localhost:9981). Used as fallback if DVR logs are unavailable.",
+        )
+        sub.add_argument(
+            "--tvh-user",
+            default=os.environ.get("EPICUR_TVH_USER", ""),
+            help="TVHeadend API username (or set EPICUR_TVH_USER).",
+        )
+        sub.add_argument(
+            "--tvh-pass",
+            default=os.environ.get("EPICUR_TVH_PASS", ""),
+            help="TVHeadend API password (or set EPICUR_TVH_PASS).",
+        )
+
+    # --- recognize ---
+    recognize_parser = subparsers.add_parser(
+        "recognize",
+        help="Scan for new recordings and organize into series/season/episode folders.",
     )
-    parser.add_argument(
-        "--tmdb-api-key",
-        default=os.environ.get("EPICUR_TMDB_API_KEY", ""),
-        help="Optional TMDB API key for richer episode data (or set EPICUR_TMDB_API_KEY).",
-    )
-    parser.add_argument(
-        "--review",
-        action="store_true",
-        help="Interactively review and manually assign unmatched recordings.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would happen without actually moving files.",
-    )
-    parser.add_argument(
-        "--no-tvmaze",
-        action="store_true",
-        help="Disable TVMaze lookups (use only TMDB and local matching). Implied when --language is not English.",
-    )
-    parser.add_argument(
-        "--language",
-        default="de-DE",
-        help="TMDB metadata language as BCP-47 tag (default: de-DE). TVMaze is automatically disabled for non-English languages.",
-    )
-    parser.add_argument(
+    add_common_args(recognize_parser)
+    add_api_args(recognize_parser)
+    add_tvh_args(recognize_parser)
+    recognize_parser.add_argument(
         "--confidence",
         type=float,
         default=0.6,
         help="Minimum match confidence to accept (0.0–1.0, default: 0.6).",
     )
-    parser.add_argument(
-        "--tvh-dvr-log",
-        type=Path,
-        default=Path.home() / ".hts" / "tvheadend" / "dvr" / "log",
-        help="Path to TVHeadend DVR log directory (default: ~/.hts/tvheadend/dvr/log/).",
-    )
-    parser.add_argument(
-        "--tvh-url",
-        default="",
-        help="TVHeadend HTTP API URL (e.g. http://localhost:9981). Used as fallback if DVR logs are unavailable.",
-    )
-    parser.add_argument(
-        "--tvh-user",
-        default=os.environ.get("EPICUR_TVH_USER", ""),
-        help="TVHeadend API username (or set EPICUR_TVH_USER).",
-    )
-    parser.add_argument(
-        "--tvh-pass",
-        default=os.environ.get("EPICUR_TVH_PASS", ""),
-        help="TVHeadend API password (or set EPICUR_TVH_PASS).",
-    )
-    parser.add_argument(
+    recognize_parser.add_argument(
         "--min-age",
         type=int,
         default=300,
         help="Minimum file age in seconds before processing (default: 300). Files modified more recently are assumed to still be recording. Use 0 to disable.",
     )
-    parser.add_argument(
-        "--extensions",
-        default=".ts,.mp4,.mkv",
-        help="Comma-separated list of file extensions to process (default: .ts,.mp4,.mkv).",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable debug logging.",
-    )
-    parser.add_argument(
-        "--log-file",
+    recognize_parser.add_argument(
+        "--library-dir",
+        type=Path,
         default=None,
-        help="Path to a log file.",
+        help="Path to Kodi media library. If set, episodes already present as .mp4 in the library are treated as duplicates.",
     )
-    return parser.parse_args(argv)
+
+    # --- review ---
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Interactively review and manually assign unmatched recordings.",
+    )
+    add_common_args(review_parser)
+
+    # --- postprocess ---
+    postprocess_parser = subparsers.add_parser(
+        "postprocess",
+        help="Convert completed seasons to .mp4 with chapter markers and move to library.",
+    )
+    add_common_args(postprocess_parser)
+    add_api_args(postprocess_parser)
+    add_tvh_args(postprocess_parser)
+    postprocess_parser.add_argument(
+        "--library-dir",
+        type=Path,
+        required=True,
+        help="Destination directory for converted .mp4 files (Kodi media library).",
+    )
+    postprocess_parser.add_argument(
+        "--comskip-ini",
+        type=Path,
+        default=None,
+        help="Path to comskip.ini configuration file. Uses built-in default if not specified.",
+    )
+    postprocess_parser.add_argument(
+        "--crf",
+        type=int,
+        default=20,
+        help="FFmpeg CRF value for x264 encoding (default: 20). Lower = better quality, larger files.",
+    )
+    postprocess_parser.add_argument(
+        "--preset",
+        default="slow",
+        choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+        help="FFmpeg x264 encoding preset (default: slow).",
+    )
+
+    args = parser.parse_args(argv)
+
+    # Show help when no subcommand is given
+    if args.mode is None:
+        parser.print_help()
+        sys.exit(2)
+
+    return args
+
+
+def _load_tvh_entries(args: argparse.Namespace) -> list[dict]:
+    """Load TVHeadend DVR entries from log directory or API."""
+    tvh_entries: list[dict] = []
+    tvh_dvr_log = args.tvh_dvr_log
+    if tvh_dvr_log.is_dir():
+        tvh_entries = parse_dvr_log_dir(tvh_dvr_log)
+    elif args.tvh_url:
+        tvh_entries = fetch_dvr_entries_api(args.tvh_url, args.tvh_user, args.tvh_pass)
+    else:
+        logger.warning("No TVH data source available (DVR log dir: %s)", tvh_dvr_log)
+    return tvh_entries
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -306,22 +388,49 @@ def main(argv: list[str] | None = None) -> int:
 
     extensions = {ext.strip() if ext.startswith(".") else f".{ext.strip()}" for ext in args.extensions.split(",")}
 
-    # Interactive review mode
-    if args.review:
-        # Suppress log output during interactive review
+    # --- review mode ---
+    if args.mode == "review":
         logging.getLogger().setLevel(logging.WARNING)
         review_unmatched(args.directory, extensions, dry_run=args.dry_run)
         return 0
 
-    # Load TVHeadend DVR entries
-    tvh_entries: list[dict] = []
-    tvh_dvr_log = args.tvh_dvr_log
-    if tvh_dvr_log.is_dir():
-        tvh_entries = parse_dvr_log_dir(tvh_dvr_log)
-    elif args.tvh_url:
-        tvh_entries = fetch_dvr_entries_api(args.tvh_url, args.tvh_user, args.tvh_pass)
-    else:
-        logger.warning("No TVH data source available (DVR log dir: %s)", tvh_dvr_log)
+    # --- postprocess mode ---
+    if args.mode == "postprocess":
+        from .postprocess import postprocess_all, print_postprocess_report
+
+        if args.library_dir.resolve() == args.directory.resolve():
+            logger.warning(
+                "library-dir is the same as the recordings directory (%s). "
+                "Converted files will be placed alongside originals.",
+                args.library_dir,
+            )
+
+        tvh_entries = _load_tvh_entries(args)
+
+        use_tvmaze = not args.no_tvmaze
+        if use_tvmaze and not args.language.lower().startswith("en"):
+            logger.info("Disabling TVMaze (English-only) for language '%s'", args.language)
+            use_tvmaze = False
+
+        results = postprocess_all(
+            root_dir=args.directory,
+            library_dir=args.library_dir,
+            comskip_ini=args.comskip_ini,
+            crf=args.crf,
+            preset=args.preset,
+            extensions=extensions,
+            tmdb_api_key=args.tmdb_api_key,
+            use_tvmaze=use_tvmaze,
+            language=args.language,
+            dry_run=args.dry_run,
+        )
+
+        print_postprocess_report(results)
+        errors = [r for r in results if r.action == "error"]
+        return 1 if errors else 0
+
+    # --- recognize mode ---
+    tvh_entries = _load_tvh_entries(args)
 
     logger.info("epicur starting")
     logger.info("Root directory : %s", args.directory)
@@ -330,7 +439,6 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("TVH entries    : %d", len(tvh_entries))
     logger.info("Dry run        : %s", args.dry_run)
 
-    # Imply --no-tvmaze for non-English languages (TVMaze is English-only)
     use_tvmaze = not args.no_tvmaze
     if use_tvmaze and not args.language.lower().startswith("en"):
         logger.info("Disabling TVMaze (English-only) for language '%s'", args.language)
@@ -346,6 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         tvh_entries=tvh_entries or None,
         min_age=args.min_age,
+        library_dir=getattr(args, "library_dir", None),
     )
 
     print_report(results)

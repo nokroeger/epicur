@@ -31,6 +31,9 @@ Homepage = "https://github.com/epicur/epicur"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+epicur = ["data/*.ini"]
+
 [tool.setuptools.dynamic]
 version = {attr = "epicur.__version__"}
 

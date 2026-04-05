@@ -53,12 +53,37 @@ def compute_duplicate_path(series_dir: Path, match: EpisodeMatch, source_file: P
     return target
 
 
+def check_library_duplicate(
+    series_dir: Path,
+    match: EpisodeMatch,
+    source_file: Path,
+    library_dir: Path,
+    root_dir: Path,
+) -> bool:
+    """Check if a .mp4 version of the episode already exists in *library_dir*.
+
+    Maps the series directory relative to *root_dir* into *library_dir*
+    and looks for a file with the same stem pattern but .mp4 extension.
+    """
+    try:
+        rel = series_dir.resolve().relative_to(root_dir.resolve())
+    except ValueError:
+        return False
+    stem = _base_stem(source_file)
+    filename = f"{stem} S{match.season_number:02d}E{match.episode_number:02d}.mp4"
+    season_folder = f"Season {match.season_number}"
+    candidate = library_dir / rel / season_folder / filename
+    return candidate.exists()
+
+
 def organize_file(
     series_dir: Path,
     source_file: Path,
     match: EpisodeMatch | None,
     *,
     dry_run: bool = False,
+    library_dir: Path | None = None,
+    root_dir: Path | None = None,
 ) -> OrganizationResult:
     """Move or rename a recording file based on its episode match.
 
@@ -77,8 +102,12 @@ def organize_file(
 
     target = compute_target_path(series_dir, match, source_file)
 
-    # Check for duplicate
+    # Check for duplicate in library directory
     is_duplicate = target.exists()
+    if not is_duplicate and library_dir and root_dir:
+        is_duplicate = check_library_duplicate(series_dir, match, source_file, library_dir, root_dir)
+        if is_duplicate:
+            logger.info("Library duplicate detected (mp4 exists in %s)", library_dir)
     if is_duplicate:
         target = compute_duplicate_path(series_dir, match, source_file)
         action = "duplicate"

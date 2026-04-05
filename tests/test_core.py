@@ -36,6 +36,7 @@ from epicur.file_organizer import (
     compute_target_path,
     compute_duplicate_path,
     organize_file,
+    check_library_duplicate,
 )
 from epicur.review import (
     _parse_meta_file,
@@ -260,6 +261,43 @@ class TestOrganizeFile:
         result = organize_file(tmp_path, video, match, dry_run=False)
         assert result.action == "duplicate"
         assert "duplicates" in str(result.target_path)
+
+    def test_library_duplicate_detected(self, tmp_path: Path):
+        root = tmp_path / "recordings"
+        series = root / "Show"
+        series.mkdir(parents=True)
+        video = series / "show.ts"
+        video.write_text("content")
+        match = EpisodeMatch(series_title="Show", season_number=1, episode_number=1)
+
+        lib = tmp_path / "library"
+        lib_target = lib / "Show" / "Season 1" / "show S01E01.mp4"
+        lib_target.parent.mkdir(parents=True)
+        lib_target.write_text("converted")
+
+        result = organize_file(series, video, match, dry_run=True, library_dir=lib, root_dir=root)
+        assert result.action == "duplicate"
+
+    def test_library_duplicate_not_found(self, tmp_path: Path):
+        root = tmp_path / "recordings"
+        series = root / "Show"
+        series.mkdir(parents=True)
+        video = series / "show.ts"
+        video.write_text("content")
+        match = EpisodeMatch(series_title="Show", season_number=1, episode_number=1)
+
+        lib = tmp_path / "library"
+        lib.mkdir()
+
+        result = organize_file(series, video, match, dry_run=True, library_dir=lib, root_dir=root)
+        assert result.action == "moved"
+
+    def test_library_dir_none_unchanged(self, tmp_path: Path):
+        video = tmp_path / "show.ts"
+        video.write_text("content")
+        match = EpisodeMatch(series_title="Show", season_number=1, episode_number=1)
+        result = organize_file(tmp_path, video, match, dry_run=True, library_dir=None)
+        assert result.action == "moved"
 
 
 # -----------------------------------------------------------------------
@@ -672,7 +710,8 @@ class TestMatchFromMeta:
 
 class TestParseArgs:
     def test_minimal_args(self):
-        args = parse_args(["/tmp/recordings"])
+        args = parse_args(["recognize", "/tmp/recordings"])
+        assert args.mode == "recognize"
         assert args.directory == Path("/tmp/recordings")
         assert args.confidence == 0.6
         assert args.dry_run is False
@@ -680,6 +719,7 @@ class TestParseArgs:
 
     def test_all_flags(self):
         args = parse_args([
+            "recognize",
             "/tmp/rec",
             "--dry-run",
             "--verbose",
@@ -696,7 +736,7 @@ class TestParseArgs:
 
     def test_env_var_tmdb_key(self):
         with patch.dict(os.environ, {"EPICUR_TMDB_API_KEY": "test_key_123"}):
-            args = parse_args(["/tmp/rec"])
+            args = parse_args(["recognize", "/tmp/rec"])
             assert args.tmdb_api_key == "test_key_123"
 
     def test_env_var_tvh_credentials(self):
@@ -704,14 +744,32 @@ class TestParseArgs:
             "EPICUR_TVH_USER": "admin",
             "EPICUR_TVH_PASS": "secret",
         }):
-            args = parse_args(["/tmp/rec"])
+            args = parse_args(["recognize", "/tmp/rec"])
             assert args.tvh_user == "admin"
             assert args.tvh_pass == "secret"
 
     def test_cli_overrides_env(self):
         with patch.dict(os.environ, {"EPICUR_TMDB_API_KEY": "env_key"}):
-            args = parse_args(["/tmp/rec", "--tmdb-api-key", "cli_key"])
+            args = parse_args(["recognize", "/tmp/rec", "--tmdb-api-key", "cli_key"])
             assert args.tmdb_api_key == "cli_key"
+
+    def test_review_mode(self):
+        args = parse_args(["review", "/tmp/rec", "--dry-run"])
+        assert args.mode == "review"
+        assert args.directory == Path("/tmp/rec")
+        assert args.dry_run is True
+
+    def test_postprocess_mode(self):
+        args = parse_args(["postprocess", "/tmp/rec", "--library-dir", "/media/tv"])
+        assert args.mode == "postprocess"
+        assert args.library_dir == Path("/media/tv")
+        assert args.crf == 20
+        assert args.preset == "slow"
+
+    def test_no_subcommand_exits(self):
+        with pytest.raises(SystemExit) as exc_info:
+            parse_args([])
+        assert exc_info.value.code == 2
 
 
 # -----------------------------------------------------------------------
