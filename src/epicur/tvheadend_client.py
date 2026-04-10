@@ -141,63 +141,41 @@ def find_dvr_entry_for_file(
 ) -> dict | None:
     """Find the DVR log entry that corresponds to *file_path*.
 
-    Matching strategies (tried in order):
-      1. Exact basename match (case-insensitive) for entries that have a filename.
-      2. Basename with TVH duplicate suffix stripped (``Title-3.ts`` →
-         ``Title.ts``), then pick the entry closest to the file's mtime.
-      3. Directory + title match: for entries without a filename, match the
-         series directory name against the file's parent, then pick by
-         mtime proximity to the recording start timestamp.
-
-    Returns the best matching normalised entry, or ``None``.
+    Returns the best matching entry based on file modification time, or ``None``.
     """
-    target_name = file_path.name.lower()
 
-    # Strategy 1: exact basename match (for entries that have filenames)
+
+    # 1. Finde alle Kandidaten mit exakt passendem filename (Pfadvergleich)
+    file_path_abs = str(file_path.resolve())
+    candidates = []
     for entry in entries:
-        if entry["basename"] and entry["basename"].lower() == target_name:
-            logger.debug("DVR match (exact basename): %s", entry["basename"])
-            return entry
+        entry_filename = entry.get("filename")
+        if entry_filename:
+            try:
+                entry_abs = str(Path(entry_filename).resolve())
+            except Exception:
+                entry_abs = entry_filename
+            if entry_abs == file_path_abs:
+                candidates.append(entry)
 
-    # Strategy 2: strip TVH duplicate suffix, then pick by mtime proximity
-    stripped = _strip_tvh_suffix(file_path.name)
-    if stripped:
-        stripped_lower = stripped.lower()
-        candidates = [e for e in entries if e["basename"] and e["basename"].lower() == stripped_lower]
-        if candidates:
-            return _pick_closest_by_mtime(file_path, candidates)
+    # 2. Wähle aus Kandidaten den mit minimaler Differenz zwischen stop und mtime
+    if candidates:
+        try:
+            file_mtime = file_path.stat().st_mtime
+        except OSError:
+            return None
 
-    # Strategy 3: match via directory/title + mtime proximity
-    # The file's parent directory name should match the entry's directory field
-    # or the entry's title.
-    parent_name = file_path.parent.name
-    try:
-        file_mtime = file_path.stat().st_mtime
-    except OSError:
-        return None
+        def stop_time_diff(entry):
+            stop = entry.get("stop")
+            if stop is None:
+                return float("inf")
+            return abs(stop - file_mtime)
 
-    dir_candidates: list[dict] = []
-    for entry in entries:
-        # Skip entries that already have a (different) file on disk
-        if entry["basename"] and entry["basename"].lower() != target_name:
-            stripped_entry = _strip_tvh_suffix(entry["basename"])
-            if stripped_entry and stripped_entry.lower() != (stripped or "").lower():
-                continue
-
-        # Match by directory name or title against the parent folder
-        entry_dir = entry["directory"]
-        entry_title = entry["title"]
-        if entry_dir and _normalize_for_compare(entry_dir) == _normalize_for_compare(parent_name):
-            dir_candidates.append(entry)
-        elif entry_title and _normalize_for_compare(entry_title) == _normalize_for_compare(parent_name):
-            dir_candidates.append(entry)
-
-    if dir_candidates:
-        best = _pick_closest_by_mtime(file_path, dir_candidates)
-        if best:
+        best = min(candidates, key=stop_time_diff, default=None)
+        if best and best.get("stop") is not None:
             logger.debug(
-                "DVR match (directory+mtime): %s → subtitle=%r",
-                file_path.name, best["subtitle"][:60] if best["subtitle"] else "",
+                "DVR match (filepath+closest stop): %s → stop=%s, mtime=%s, Δ=%.1fs",
+                best.get("filename"), best.get("stop"), file_mtime, abs(best.get("stop")-file_mtime)
             )
             return best
 
@@ -208,19 +186,6 @@ def find_dvr_entry_for_file(
 def _normalize_for_compare(text: str) -> str:
     """Normalize a string for fuzzy directory/title comparison."""
     return re.sub(r"[^a-z0-9]", "", text.lower())
-
-
-def _pick_closest_by_mtime(file_path: Path, candidates: list[dict]) -> dict | None:
-    """From *candidates* pick the entry whose ``start`` timestamp is closest
-    to the file's modification time."""
-    try:
-        file_mtime = file_path.stat().st_mtime
-    except OSError:
-        return candidates[0] if candidates else None
-
-    if not candidates:
-        return None
-    return min(candidates, key=lambda e: abs(e["start"] - file_mtime))
 
 
 # ---------------------------------------------------------------------------

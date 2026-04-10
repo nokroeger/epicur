@@ -25,7 +25,6 @@ from epicur.episode_identifier import (
 )
 from epicur.tvheadend_client import (
     _strip_tvh_suffix,
-    _pick_closest_by_mtime,
     normalize_entry,
     find_dvr_entry_for_file,
     _extract_lang_value,
@@ -517,99 +516,57 @@ class TestFuzzyMatchEpisode:
 # -----------------------------------------------------------------------
 
 class TestFindDvrEntryForFile:
-    def _make_entry(self, filename: str, title: str = "", subtitle: str = "",
-                    directory: str = "", start: int = 0) -> dict:
-        return normalize_entry({
+    def _make_entry(self, filename: str, stop: int, **kwargs) -> dict:
+        # kwargs: title, subtitle, directory, start
+        base = {
             "filename": filename,
-            "title": title,
-            "subtitle": subtitle,
+            "title": kwargs.get("title", ""),
+            "subtitle": kwargs.get("subtitle", ""),
             "description": "",
             "channelname": "ARD",
-            "start": start,
-            "stop": start + 3600,
-        })
+            "start": kwargs.get("start", stop - 3600),
+            "stop": stop,
+        }
+        return normalize_entry(base)
 
-    def test_exact_basename_match(self, tmp_path: Path):
-        video = tmp_path / "Show" / "episode.ts"
-        video.parent.mkdir()
+    def test_exact_path_match(self, tmp_path: Path):
+        video = tmp_path / "rec" / "Show" / "episode.ts"
+        video.parent.mkdir(parents=True)
         video.touch()
-        entries = [self._make_entry("/rec/Show/episode.ts")]
-        result = find_dvr_entry_for_file(video, entries)
+        # Set mtime to a known value
+        mtime = int(time.time())
+        os.utime(video, (mtime, mtime))
+        entry = self._make_entry(str(video.resolve()), stop=mtime+10)
+        # Should match exactly
+        result = find_dvr_entry_for_file(video, [entry])
         assert result is not None
-        assert result["basename"] == "episode.ts"
+        assert result["filename"] == str(video.resolve())
 
-    def test_exact_match_case_insensitive(self, tmp_path: Path):
-        video = tmp_path / "Show" / "Episode.TS"
-        video.parent.mkdir()
+    def test_picks_closest_stop_among_candidates(self, tmp_path: Path):
+        video = tmp_path / "rec" / "Show" / "episode.ts"
+        video.parent.mkdir(parents=True)
         video.touch()
-        entries = [self._make_entry("/rec/Show/episode.ts")]
-        result = find_dvr_entry_for_file(video, entries)
+        mtime = int(time.time())
+        os.utime(video, (mtime, mtime))
+        # Two entries with same filename, different stop times
+        entry1 = self._make_entry(str(video.resolve()), stop=mtime-100)
+        entry2 = self._make_entry(str(video.resolve()), stop=mtime+5)
+        entry3 = self._make_entry(str(video.resolve()), stop=mtime+1000)
+        result = find_dvr_entry_for_file(video, [entry1, entry2, entry3])
         assert result is not None
+        # Should pick entry2 (stop=mtime+5)
+        assert abs(result["stop"] - mtime) <= 10
 
-    def test_suffix_stripped_match(self, tmp_path: Path):
-        video = tmp_path / "Show" / "Show-3.ts"
-        video.parent.mkdir()
-        video.write_text("x")
-        entries = [
-            self._make_entry("/rec/Show/Show.ts", start=int(video.stat().st_mtime)),
-        ]
-        result = find_dvr_entry_for_file(video, entries)
-        assert result is not None
-        assert result["basename"] == "Show.ts"
-
-    def test_directory_title_match(self, tmp_path: Path):
-        series_dir = tmp_path / "JAG"
-        series_dir.mkdir()
-        video = series_dir / "unknown_file.ts"
-        video.write_text("x")
-        mtime = int(video.stat().st_mtime)
-        entries = [
-            self._make_entry("", title="JAG", subtitle="Ep1", start=mtime),
-        ]
-        result = find_dvr_entry_for_file(video, entries)
-        assert result is not None
-        assert result["subtitle"] == "Ep1"
-
-    def test_no_match(self, tmp_path: Path):
-        video = tmp_path / "Show" / "completely_different.ts"
-        video.parent.mkdir()
+    def test_no_match_if_no_path_matches(self, tmp_path: Path):
+        video = tmp_path / "rec" / "Show" / "episode.ts"
+        video.parent.mkdir(parents=True)
         video.touch()
-        entries = [self._make_entry("/rec/Other/other.ts", title="Other")]
-        result = find_dvr_entry_for_file(video, entries)
+        mtime = int(time.time())
+        os.utime(video, (mtime, mtime))
+        # Entry with different filename
+        entry = self._make_entry("/some/other/path.ts", stop=mtime)
+        result = find_dvr_entry_for_file(video, [entry])
         assert result is None
-
-
-# -----------------------------------------------------------------------
-# tvheadend_client.py — _pick_closest_by_mtime
-# -----------------------------------------------------------------------
-
-class TestPickClosestByMtime:
-    def test_picks_closest(self, tmp_path: Path):
-        video = tmp_path / "show.ts"
-        video.write_text("x")
-        mtime = video.stat().st_mtime
-        candidates = [
-            {"start": int(mtime) - 10000, "basename": "a"},
-            {"start": int(mtime) - 5, "basename": "b"},  # closest
-            {"start": int(mtime) + 10000, "basename": "c"},
-        ]
-        result = _pick_closest_by_mtime(video, candidates)
-        assert result is not None
-        assert result["basename"] == "b"
-
-    def test_empty_candidates(self, tmp_path: Path):
-        video = tmp_path / "show.ts"
-        video.write_text("x")
-        assert _pick_closest_by_mtime(video, []) is None
-
-    def test_file_not_found_fallback(self, tmp_path: Path):
-        video = tmp_path / "nonexistent.ts"
-        candidates = [{"start": 1000, "basename": "a"}]
-        result = _pick_closest_by_mtime(video, candidates)
-        # Fallback: returns first candidate if stat fails
-        assert result is not None
-        assert result["basename"] == "a"
-
 
 # -----------------------------------------------------------------------
 # review.py — _parse_meta_file
