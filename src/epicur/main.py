@@ -357,6 +357,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
         help="FFmpeg x264 encoding preset (default: slow).",
     )
+    postprocess_parser.add_argument(
+        "--kodi-url",
+        default="",
+        help="Kodi JSON-RPC URL (e.g. http://192.168.1.10:8080). If set, triggers a video library scan after postprocessing.",
+    )
+    postprocess_parser.add_argument(
+        "--kodi-user",
+        default="",
+        help="Kodi HTTP username for Basic Auth.",
+    )
+    postprocess_parser.add_argument(
+        "--kodi-pass",
+        default=os.environ.get("EPICUR_KODI_PASS", ""),
+        help="Kodi HTTP password (or set EPICUR_KODI_PASS).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -424,6 +439,28 @@ def main(argv: list[str] | None = None) -> int:
             language=args.language,
             dry_run=args.dry_run,
         )
+
+        # Trigger Kodi library scan for converted episodes
+        converted = [r for r in results if r.action == "converted"]
+        if args.kodi_url and converted:
+            from .kodi_client import scan_video_library
+
+            # Collect unique series directories to scan
+            scan_dirs: set[str] = set()
+            for r in converted:
+                if r.output_path:
+                    scan_dirs.add(str(r.output_path.parent.parent))
+
+            for scan_dir in sorted(scan_dirs):
+                if args.dry_run:
+                    logger.info("[DRY RUN] Would trigger Kodi library scan for: %s", scan_dir)
+                else:
+                    scan_video_library(
+                        args.kodi_url,
+                        directory=scan_dir,
+                        username=args.kodi_user,
+                        password=args.kodi_pass,
+                    )
 
         print_postprocess_report(results)
         errors = [r for r in results if r.action == "error"]
