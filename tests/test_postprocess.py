@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch, call, ANY
 
 import pytest
 
@@ -43,12 +43,22 @@ class TestScanSeasonDir:
         result = _scan_season_dir(season, {".ts"})
         assert result == {}
 
+
     def test_ignores_files_without_pattern(self, tmp_path: Path):
         season = tmp_path / "Season 1"
         season.mkdir()
         (season / "random.ts").write_text("x")
         result = _scan_season_dir(season, {".ts"})
         assert result == {}
+
+    def test_multi_episode_file(self, tmp_path: Path):
+        season = tmp_path / "Season 1"
+        season.mkdir()
+        f = season / "Show S01E01E02.ts"
+        f.write_text("x")
+        result = _scan_season_dir(season, {".ts"})
+        # S01E01E02.ts sollte Episode 1 und 2 abdecken
+        assert result == {1: f, 2: f}
 
 
 class TestFindCompleteSeasons:
@@ -571,6 +581,33 @@ class TestPostprocessAll:
         results = postprocess_all(root, tmp_path / "lib", None)
         assert len(results) == 1
         assert results[0].action == "skipped"
+    @patch("epicur.postprocess.postprocess_episode")
+    @patch("epicur.postprocess.find_complete_seasons")
+    def test_multi_episode_file_processed_once(self, mock_find, mock_pp, tmp_path: Path):
+        root = tmp_path / "rec"
+        series = root / "Show"
+        season_dir = series / "Season 1"
+        season_dir.mkdir(parents=True)
+        multi_ep = season_dir / "Show S01E01E02.ts"
+        multi_ep.write_text("x")
+
+        # Multi-Episoden-Datei deckt Episode 1 und 2 ab
+        mock_find.return_value = [SeasonInfo(
+            series_title="Show", series_dir=series,
+            season_number=1, total_episodes=2,
+            present_episodes={1: multi_ep, 2: multi_ep}, missing_episodes=[],
+        )]
+
+        mock_pp.return_value = PostprocessResult(source_path=multi_ep, output_path=tmp_path / "lib" / "Show S01E01E02.mp4", action="converted")
+
+        results = postprocess_all(root, tmp_path / "lib", None)
+        # Es darf nur ein Ergebnis für die Datei geben
+        assert len(results) == 1
+        assert results[0].source_path == multi_ep
+        assert results[0].action == "converted"
+        # Die Datei darf nur einmal verarbeitet werden
+        expected_output = tmp_path / "lib" / "Show" / "Season 1" / "Show S01E01E02.mp4"
+        mock_pp.assert_called_once_with(multi_ep, expected_output, ANY, crf=20, preset="slow")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -599,3 +636,4 @@ class TestPrintPostprocessReport:
         assert "[CONVERTED]" in out
         assert "[SKIPPED  ]" in out
         assert "[ERROR    ]" in out
+

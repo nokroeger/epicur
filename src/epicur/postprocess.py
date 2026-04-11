@@ -20,8 +20,8 @@ from .models import PostprocessResult, SeasonInfo
 
 logger = logging.getLogger(__name__)
 
-# Pattern to extract S##E## from organized filenames
-_EPISODE_RE = re.compile(r"S(\d{2})E(\d{2})")
+# Pattern to extract S##E## or S##EXXEYY from organized filenames
+_EPISODE_RE = re.compile(r"S(\d{2})E(\d{2})(?:E(\d{2}))?")
 
 # comskip artifact extensions to clean up (relative to ts file stem)
 _COMSKIP_ARTIFACTS = (".edl", ".log", ".logo.txt", ".txt")
@@ -81,15 +81,20 @@ def _get_episode_count_per_season(
 
 
 def _scan_season_dir(season_dir: Path, extensions: set[str]) -> dict[int, Path]:
-    """Scan a Season directory and return {episode_number: file_path}."""
+    """Scan a Season directory and return {episode_number: file_path}. Supports multi-episode files."""
     episodes: dict[int, Path] = {}
     for f in season_dir.iterdir():
         if not f.is_file() or f.suffix.lower() not in extensions:
             continue
         m = _EPISODE_RE.search(f.name)
         if m:
-            ep_num = int(m.group(2))
-            episodes[ep_num] = f
+            ep_start = int(m.group(2))
+            ep_end = int(m.group(3)) if m.group(3) else None
+            if ep_end and ep_end > ep_start:
+                for ep_num in range(ep_start, ep_end + 1):
+                    episodes[ep_num] = f
+            else:
+                episodes[ep_start] = f
     return episodes
 
 
@@ -467,6 +472,7 @@ def postprocess_all(
         logger.info("No complete seasons found.")
         return []
 
+
     results: list[PostprocessResult] = []
 
     for season in complete_seasons:
@@ -475,8 +481,16 @@ def postprocess_all(
             season.series_title, season.season_number, season.total_episodes,
         )
 
-        for ep_num in sorted(season.present_episodes):
-            ts_file = season.present_episodes[ep_num]
+        # Multi-Episoden-Dateien: Jede Datei nur einmal verarbeiten
+        file_to_eps = {}
+        for ep_num, ts_file in season.present_episodes.items():
+            file_to_eps.setdefault(ts_file, []).append(ep_num)
+
+        processed_files = set()
+        for ts_file, ep_nums in file_to_eps.items():
+            if ts_file in processed_files:
+                continue
+            processed_files.add(ts_file)
 
             # Skip non-.ts files (already converted)
             if ts_file.suffix.lower() != ".ts":
