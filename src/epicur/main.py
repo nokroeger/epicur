@@ -372,6 +372,53 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("EPICUR_KODI_PASS", ""),
         help="Kodi HTTP password (or set EPICUR_KODI_PASS).",
     )
+    
+    # --- movie-postprocess ---
+    movie_postprocess_parser = subparsers.add_parser(
+        "movie-postprocess",
+        help="Konvertiere alle Filme im Root-Verzeichnis zu .mp4 und verschiebe sie flach in die Bibliothek.",
+    )
+    add_common_args(movie_postprocess_parser)
+    movie_postprocess_parser.add_argument(
+        "--library-dir",
+        type=Path,
+        required=True,
+        help="Zielverzeichnis für konvertierte .mp4-Dateien (Kodi-Bibliothek).",
+    )
+    movie_postprocess_parser.add_argument(
+        "--comskip-ini",
+        type=Path,
+        default=None,
+        help="Pfad zu comskip.ini. Nutzt Standard, falls nicht angegeben.",
+    )
+    movie_postprocess_parser.add_argument(
+        "--crf",
+        type=int,
+        default=20,
+        help="FFmpeg CRF-Wert für x264-Encoding (Standard: 20).",
+    )
+    movie_postprocess_parser.add_argument(
+        "--preset",
+        default="slow",
+        choices=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+        help="FFmpeg x264-Encoding-Preset (Standard: slow).",
+    )      
+    
+    movie_postprocess_parser.add_argument(
+        "--kodi-url",
+        default="",
+        help="Kodi JSON-RPC URL (e.g. http://192.168.1.10:8080). If set, triggers a video library scan after postprocessing.",
+    )
+    movie_postprocess_parser.add_argument(
+        "--kodi-user",
+        default="",
+        help="Kodi HTTP username for Basic Auth.",
+    )
+    movie_postprocess_parser.add_argument(
+        "--kodi-pass",
+        default=os.environ.get("EPICUR_KODI_PASS", ""),
+        help="Kodi HTTP password (or set EPICUR_KODI_PASS).",
+    )    
 
     args = parser.parse_args(argv)
 
@@ -465,6 +512,48 @@ def main(argv: list[str] | None = None) -> int:
         print_postprocess_report(results)
         errors = [r for r in results if r.action == "error"]
         return 1 if errors else 0
+    
+    # --- movie-postprocess mode ---
+    if args.mode == "movie-postprocess":
+        from .postprocess import postprocess_movies, print_postprocess_report
+
+        if args.library_dir.resolve() == args.directory.resolve():
+            logger.warning(
+                "library-dir is the same as the recordings directory (%s). "
+                "Converted files will be placed alongside originals.",
+                args.library_dir,
+            )
+
+        results = postprocess_movies(
+            root_dir=args.directory,
+            library_dir=args.library_dir,
+            comskip_ini=args.comskip_ini,
+            crf=args.crf,
+            preset=args.preset,
+            extensions=extensions,
+            dry_run=args.dry_run,
+        )
+
+        # Trigger Kodi library scan if there were any converted movies
+        converted = [r for r in results if r.action == "converted"]
+
+        if converted:
+            if args.dry_run:
+                logger.info("[DRY RUN] Would trigger Kodi library scan for: %s", args.library_dir)
+            else:
+                scan_video_library(
+                    args.kodi_url,
+                    directory=args.library_dir,
+                    username=args.kodi_user,
+                    password=args.kodi_pass,
+                )
+        else:
+            logger.info("No movies were converted, skipping Kodi library scan.")
+                
+
+        print_postprocess_report(results)
+        errors = [r for r in results if r.action == "error"]
+        return 1 if errors else 0    
 
     # --- recognize mode ---
     tvh_entries = _load_tvh_entries(args)

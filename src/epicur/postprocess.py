@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib.resources
 import logging
 import re
-import shutil
+import time
 import subprocess
 from pathlib import Path
 
@@ -526,6 +526,82 @@ def postprocess_all(
                 ts_file, output_path, comskip_ini, crf=crf, preset=preset,
             )
             results.append(result)
+
+    return results
+
+def postprocess_movies(
+    root_dir: Path,
+    library_dir: Path,
+    comskip_ini: Path | None,
+    *,
+    crf: int = 20,
+    preset: str = "slow",
+    extensions: set[str] | None = None,
+    dry_run: bool = False,
+) -> list[PostprocessResult]:
+    """Process movies using the same pipeline as episodes, but without season/episode metadata. Finds all movie files in root_dir."""
+    if extensions is None:
+        extensions = {".ts", ".mp4", ".mkv"}
+
+    if comskip_ini is None:
+        comskip_ini = _default_comskip_ini()
+
+    results: list[PostprocessResult] = []
+
+    # Find all movie files in root_dir (non-recursive)
+    movie_files = [f for f in root_dir.iterdir() if f.is_file() and f.suffix.lower() in extensions]
+    
+    if not movie_files:
+        logger.info("No movie files found in %s", root_dir)
+        return results
+
+    for movie_file in movie_files:
+        logger.info("=== Postprocessing movie: %s ===", movie_file.name)
+
+
+        processed_files = set()
+        processed_files.add(movie_file)
+
+        # Skip mp4 files (already converted)
+        if movie_file.suffix.lower() == ".mp4":
+            logger.info("Skipping already converted file: %s", movie_file.name)
+            results.append(PostprocessResult(
+                source_path=movie_file, output_path=None, action="skipped",
+            ))
+            continue
+        
+        # Skip files still being written (e.g. .ts files with recent modification time)
+        mtime = movie_file.stat().st_mtime
+        if time.time() - mtime < 60:  # Skip if modified in the last 60 seconds
+            logger.info("Skipping file still being written: %s", movie_file.name)
+            results.append(PostprocessResult(
+                source_path=movie_file, output_path=None, action="skipped",
+            ))
+            continue
+
+        # Compute output path in library_dir: flat, just use the filename
+        output_path = library_dir / (movie_file.stem + ".mp4")
+
+        # Check if already converted
+        if output_path.exists():
+            logger.info("Already exists in library: %s", output_path)
+            results.append(PostprocessResult(
+                source_path=movie_file, output_path=output_path, action="skipped",
+            ))
+            continue
+
+        if dry_run:
+            logger.info("[DRY RUN] Would convert: %s → %s", movie_file, output_path)
+            results.append(PostprocessResult(
+                source_path=movie_file, output_path=output_path, action="converted",
+            ))
+            continue
+
+        #post process the movie like a series episode
+        result = postprocess_episode(
+            movie_file, output_path, comskip_ini, crf=crf, preset=preset,
+        )
+        results.append(result)
 
     return results
 
