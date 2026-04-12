@@ -234,3 +234,55 @@ def fetch_dvr_entries_api(
     entries = [normalize_entry(e) for e in raw_entries if isinstance(e, dict)]
     logger.info("Fetched %d DVR entries from TVH API", len(entries))
     return entries
+
+# ---------------------------------------------------------------------------
+# EPG API client (fetch all EPG events)
+# ---------------------------------------------------------------------------
+
+def fetch_epg_events_api(
+    base_url: str,
+    username: str = "",
+    password: str = "",
+    limit: int = 1000000,
+    timeout: int = 30,
+    channelTag: str = "TV channels"
+) -> list[dict]:
+    """Fetch EPG events from the TVHeadend HTTP API.
+
+    Calls GET /api/epg/events/grid?limit=... with optional Basic Auth.
+    Returns a list of event dicts.
+    """
+    import urllib.request
+    import urllib.error
+    import json
+
+    if base_url.startswith("http://"):
+        logger.warning(
+            "TVH API URL uses plain HTTP – credentials will be sent unencrypted. "
+            "Consider using https:// if the server supports it."
+        )
+
+    url = f"{base_url.rstrip('/')}/api/epg/events/grid?limit={limit}"
+    if channelTag:
+        url += f"&channelTag={urllib.parse.quote(channelTag)}"
+    logger.info("Fetching EPG events from TVH API: %s", url)
+
+    req = urllib.request.Request(url, headers={"User-Agent": "epicur/1.0"})
+    if username:
+        credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+        req.add_header("Authorization", f"Basic {credentials}")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data_raw = resp.read()
+            data = json.loads(data_raw.decode(errors="ignore"))
+    except urllib.error.HTTPError as exc:
+        logger.error("TVH EPG API HTTP %d: %s", exc.code, exc.reason)
+        return []
+    except Exception as exc:
+        logger.error("TVH EPG API request failed: %s", exc)
+        return []
+
+    events = data.get("entries", [])
+    logger.info("Fetched %d EPG events from TVH API", len(events))
+    return events

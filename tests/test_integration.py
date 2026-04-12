@@ -822,7 +822,7 @@ class TestMainCli:
         lib = tmp_path / "library"
         lib.mkdir()
 
-        with patch("epicur.postprocess.postprocess_all", return_value=[]) as mock_pp:
+        with patch("epicur.main.postprocess_all", return_value=[]) as mock_pp:
             rc = main([
                 "postprocess", str(root),
                 "--library-dir", str(lib),

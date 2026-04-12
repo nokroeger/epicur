@@ -18,7 +18,8 @@ import argparse
 import logging
 import os
 import sys
-import time
+import time, datetime
+import csv
 from pathlib import Path
 
 from .episode_identifier import identify_episode
@@ -30,7 +31,11 @@ from .tvheadend_client import (
     find_dvr_entry_for_file,
     parse_dvr_log_dir,
     fetch_dvr_entries_api,
+    fetch_epg_events_api
 )
+from .kodi_client import scan_video_library
+from .postprocess import postprocess_all, postprocess_movies, print_postprocess_report
+
 from . import __version__
 
 logger = logging.getLogger("epicur")
@@ -420,13 +425,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Kodi HTTP password (or set EPICUR_KODI_PASS).",
     )    
 
-    args = parser.parse_args(argv)
 
+    # --- scan ---
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scanne EPG (TVHeadend) nach Staffelstarts und schreibe CSV-Ausgabe.",
+    )
+    add_common_args(scan_parser)
+    add_tvh_args(scan_parser)
+    add_api_args(scan_parser)
+    
+    scan_parser.add_argument(
+        "--output",
+        default="~/series-starts.csv",
+        help="Pfad zur Ausgabedatei (CSV, Standard: ~/series-starts.csv)",
+    )
+
+    args = parser.parse_args(argv)
     # Show help when no subcommand is given
     if args.mode is None:
         parser.print_help()
         sys.exit(2)
-
     return args
 
 
@@ -458,7 +477,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- postprocess mode ---
     if args.mode == "postprocess":
-        from .postprocess import postprocess_all, print_postprocess_report
 
         if args.library_dir.resolve() == args.directory.resolve():
             logger.warning(
@@ -490,7 +508,6 @@ def main(argv: list[str] | None = None) -> int:
         # Trigger Kodi library scan for converted episodes
         converted = [r for r in results if r.action == "converted"]
         if args.kodi_url and converted:
-            from .kodi_client import scan_video_library
 
             # Collect unique series directories to scan
             scan_dirs: set[str] = set()
@@ -515,7 +532,6 @@ def main(argv: list[str] | None = None) -> int:
     
     # --- movie-postprocess mode ---
     if args.mode == "movie-postprocess":
-        from .postprocess import postprocess_movies, print_postprocess_report
 
         if args.library_dir.resolve() == args.directory.resolve():
             logger.warning(
@@ -545,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.kodi_url,
                     directory=args.library_dir,
                     username=args.kodi_user,
-                    password=args.kodi_pass,
+                    password=args.kodi_pass
                 )
         else:
             logger.info("No movies were converted, skipping Kodi library scan.")
@@ -554,6 +570,68 @@ def main(argv: list[str] | None = None) -> int:
         print_postprocess_report(results)
         errors = [r for r in results if r.action == "error"]
         return 1 if errors else 0    
+    
+    # --- scan mode ---
+    if args.mode == "scan":
+        # EPG laden
+        events = fetch_epg_events_api(
+            args.tvh_url,
+            username=args.tvh_user,
+            password=args.tvh_pass,
+        )
+        # Staffelstarts finden: {(serie, staffel): (start, kanal)}
+        starts = {}
+        
+        use_tvmaze = not args.no_tvmaze
+        if use_tvmaze and not args.language.lower().startswith("en"):
+            logger.info("Disabling TVMaze (English-only) for language '%s'", args.language)
+            use_tvmaze = False        
+        
+        for event in events:
+            # Metadaten wie bei recognize extrahieren
+            fake_path = Path(f"{event.get('title','').strip() or 'unknown'}.ts")
+            tvh_entry = {
+                "subtitle": event.get("subtitle", ""),
+                "description": event.get("summary", ""),
+                "channel": event.get("channelname", ""),
+                "start": event.get("start", 0),
+                "stop": event.get("stop", 0),
+            }
+            logger.info("Processing EPG event: title=%r, subtitle=%r, channel=%s", event.get("title", ""), tvh_entry["subtitle"], tvh_entry["channel"])
+            metadata = extract_all_metadata(fake_path, tvh_entry=tvh_entry)
+            match = identify_episode(
+                event.get("title", "").strip(),
+                metadata,
+                fake_path,
+                min_confidence=0.0,  # alles akzeptieren, für reine Zuordnung
+                tmdb_api_key=getattr(args, "tmdb_api_key", ""),
+                use_tvmaze=use_tvmaze,
+                language=getattr(args, "language", "de-DE"),
+            )
+            
+            if not (match and match.series_title and match.season_number and event.get("start", 0) and event.get("channelname", "")):
+                continue
+            
+            # check if the first episode of a season was found
+            if match.episode_number == 1:
+                key = (match.series_title, match.season_number)
+                start = event.get("start", 0)
+                channel = event.get("channelname", "")
+                if key not in starts or start < starts[key][0]:
+                    starts[key] = (start, channel)
+                    
+        # Schreibe CSV
+        out_path = os.path.expanduser(args.output)
+        with open(out_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f, delimiter=";")
+            writer.writerow(["series title", "season", "start day", "start time", "channel"])
+            for (title, season), (start, channel) in sorted(starts.items()):
+                dt = datetime.datetime.fromtimestamp(start)
+                day = dt.strftime("%Y-%m-%d")
+                time = dt.strftime("%H:%M")
+                writer.writerow([title, season, day, time, channel])
+        print(f"Staffelstarts als CSV geschrieben nach: {out_path}")
+        return 0    
 
     # --- recognize mode ---
     tvh_entries = _load_tvh_entries(args)
@@ -587,7 +665,6 @@ def main(argv: list[str] | None = None) -> int:
 
     errors = [r for r in results if r.action == "error"]
     return 1 if errors else 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
