@@ -320,7 +320,7 @@ def convert_to_mp4(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=14400)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=24*60*60)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.error("FFmpeg conversion failed for %s: %s", ts_file.name, exc)
         # Clean up partial output
