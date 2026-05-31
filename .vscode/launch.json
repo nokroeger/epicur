@@ -1,0 +1,44 @@
+{
+    // Verwendet IntelliSense zum Ermitteln möglicher Attribute.
+    // Zeigen Sie auf vorhandene Attribute, um die zugehörigen Beschreibungen anzuzeigen.
+    // Weitere Informationen finden Sie unter https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "epicurKodiPass",
+            "type": "promptString",
+            "description": "EPICUR_KODI_PASS",
+            "password": true
+        },
+        {
+            "id": "epicurTmdbApiKey",
+            "type": "promptString",
+            "description": "EPICUR_TMDB_API_KEY",
+            "password": true
+        }
+    ],
+    "configurations": [
+        {
+            "name": "epicur: debug movie-postprocess",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/epicur.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "EPICUR_KODI_PASS": "${input:epicurKodiPass}",
+                "EPICUR_TMDB_API_KEY": "${input:epicurTmdbApiKey}"
+            },
+            "args": [
+                "movie-postprocess",
+                "--library-dir",
+                "/media/FRITZ.NAS/MEDIA/recordings",
+                "--kodi-url",
+                "http://localhost:8080",
+                "--kodi-user",
+                "kodi",
+                "/home/xbian/recordings"
+            ]
+        }
+    ]
+}
