@@ -635,7 +635,9 @@ def _tvh_direct_match(
             episodes = get_all_tmdb_episodes(tmdb_id, tmdb_api_key, language)
             for ep in episodes:
                 ep_name = ep.get("name", "")
-                sim = _similarity(tvh_subtitle, ep_name)
+                # shorten tvh_subtitle to number of chars in ep_name 
+                # to avoid penalizing TMDB titles with extra info extracted from TVH that is not part of the title.
+                sim = _similarity(tvh_subtitle[:len(ep_name)], ep_name)
                 if sim >= threshold:
                     confidence = min(1.0, 0.80 + sim * 0.20)
                     logger.info(

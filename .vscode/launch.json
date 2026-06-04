@@ -39,6 +39,24 @@
                 "kodi",
                 "/home/xbian/recordings"
             ]
-        }
+        },
+        {
+            "name": "epicur: debug recognize",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/epicur.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "EPICUR_KODI_PASS": "${input:epicurKodiPass}",
+                "EPICUR_TMDB_API_KEY": "${input:epicurTmdbApiKey}"
+            },
+            "args": [
+                "recognize",
+                "--library-dir",
+                "/media/FRITZ.NAS/MEDIA/Serien",
+                "/home/xbian/recordings"
+            ]
+        }        
     ]
 }
